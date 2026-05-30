@@ -6,52 +6,25 @@ import os
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="AutoValue IA", page_icon="🚗")
 
-# Rutas robustas para evitar el FileNotFoundError
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, 'modelo_autos.pkl')
-DATA_PATH = os.path.join(BASE_DIR, 'car_pricing.csv')
 
 @st.cache_resource
 def load_assets():
-    model = joblib.load(MODEL_PATH)
-    df = pd.read_csv(DATA_PATH)
-    return model, df
+    model = joblib.load(os.path.join(BASE_DIR, 'modelo_autos.pkl'))
+    # Dataset con texto para los selectores
+    df_text = pd.read_csv(os.path.join(BASE_DIR, 'car_pricing.csv'))
+    # Dataset codificado para el modelo (usamos la primera columna como índice)
+    df_encoded = pd.read_csv(os.path.join(BASE_DIR, 'car_pricing_encoded.csv'), index_col=0)
+    return model, df_text, df_encoded
 
-model, df = load_assets()
+model, df, df_encoded = load_assets()
 
-# --- 2. FUNCIÓN ROBUSTA DE TRANSFORMACIÓN ---
-def construir_fila_prediccion(auto_row, expected_features):
-    """
-    Construye un DataFrame de exactamente 1 fila (shape 1, N) 
-    asegurando que solo contenga datos numéricos y coincida 
-    con las columnas que el modelo exige.
-    """
-    # Si viene como DataFrame de 1 fila, lo pasamos a Series
-    if isinstance(auto_row, pd.DataFrame):
-        auto_row = auto_row.iloc[0]
-        
-    datos_seguros = {}
-    
-    for col in expected_features:
-        if col in auto_row.index:
-            valor = auto_row[col]
-            # Si el valor es texto (string), ponemos 0 como fallback de seguridad
-            if isinstance(valor, str):
-                datos_seguros[col] = [0]
-            else:
-                # Si es numérico, lo usamos (o 0 si viene nulo/NaN)
-                datos_seguros[col] = [0 if pd.isna(valor) else valor]
-        else:
-            # Si la columna no existe en el dataset, le ponemos 0
-            datos_seguros[col] = [0]
-            
-    # Al pasar listas [valor], Pandas asegura que se cree exactamente 1 fila
-    return pd.DataFrame(datos_seguros)
-
-# --- 3. UI Y FILTROS EN CASCADA ---
+# --- 2. UI Y FILTROS EN CASCADA ---
 st.image("autovalue.jpg", width=200)
 st.title("Simulador AutoValue")
+st.markdown("Herramienta de tasación inteligente con consistencia de datos en la nube.")
 
+# Filtrado jerárquico real
 manuf = st.selectbox("Manufacturer:", sorted(df['Manufacturer'].unique()))
 df_f = df[df['Manufacturer'] == manuf]
 
@@ -65,6 +38,36 @@ fuel = st.selectbox("Fuel type:", sorted(df_f['Fuel type'].unique()))
 df_f = df_f[df_f['Fuel type'] == fuel]
 
 gear = st.selectbox("Gear box type:", sorted(df_f['Gear box type'].unique()))
+
+# --- 3. PREDICCIÓN CON CONSISTENCIA DE ÍNDICES ---
+if st.button("💰 Calcular Precio"):
+    resultado = df_f[df_f['Gear box type'] == gear]
+    
+    if not resultado.empty:
+        # 1. Identificamos el índice original del auto encontrado
+        idx_original = resultado.index[0]
+        
+        # 2. Extraemos la fila codificada exacta desde df_encoded usando ese índice
+        fila_encoded = df_encoded.loc[[idx_original]]
+        
+        # 3. Nos aseguramos de pasarle al modelo solo las columnas con las que fue entrenado
+        datos_input = fila_encoded[model.feature_names_in_]
+        
+        # 4. Inferencia con datos reales transformados
+        prediccion = model.predict(datos_input)[0]
+        precio_real = resultado.iloc[0]['Price']
+        
+        # Resultados UI
+        st.success(f"✅ Auto encontrado en el histórico (Índice: {idx_original})")
+        
+        col1, col2 = st.columns(2)
+        col1.metric("🚀 Predicción IA", f"${prediccion:,.2f}")
+        col2.metric("💵 Precio Real", f"${precio_real:,.2f}")
+        
+        st.metric("📊 Desviación Absoluta", f"${abs(prediccion - precio_real):,.2f}")
+        
+    else:
+        st.warning("No se encontraron coincidencia exactas en el historial.")
 
 # --- 4. PREDICCIÓN ---
 if st.button("💰 Calcular Precio"):
