@@ -1,81 +1,74 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import os
+import numpy as np
 
-# --- 1. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="AutoValue IA", page_icon="🚗", layout="centered")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="AutoValue IA", page_icon="🚗")
 
-# --- 2. CARGA DE ACTIVOS ---
 @st.cache_resource
 def load_assets():
-    # Rutas relativas al archivo app.py
     model = joblib.load('modelo_autos.pkl')
     df = pd.read_csv('car_pricing.csv')
     return model, df
 
 model, df = load_assets()
 
-# --- 3. UI Y LOGO ---
-st.image("autovalue.jpg", width=250)
-st.title("Simulador de Precios AutoValue")
-st.markdown("Herramienta de tasación inteligente para el equipo de ventas.")
+# --- 2. LOGICA DE TRANSFORMACIÓN ---
+# Esta función convierte el texto seleccionado a los números que el modelo espera
+def preparar_datos(input_df):
+    # Aquí es donde ocurre la magia: debemos transformar texto a números
+    # Si usaste LabelEncoder, idealmente deberías haberlo guardado también.
+    # Como solución rápida para tu clase, convertimos las categóricas a categorías numéricas internas
+    df_transformed = input_df.copy()
+    for col in df_transformed.select_dtypes(include=['object']).columns:
+        df_transformed[col] = df_transformed[col].astype('category').cat.codes
+    return df_transformed
 
-# --- 4. FILTRADO JERÁRQUICO EN CASCADA ---
-# Manufacturer
+# --- 3. UI Y FILTROS EN CASCADA ---
+st.image("autovalue.jpg", width=200)
+st.title("Simulador AutoValue")
+
+# Filtros Jerárquicos
 manuf = st.selectbox("Manufacturer:", sorted(df['Manufacturer'].unique()))
+df_f = df[df['Manufacturer'] == manuf]
 
-# Model (filtrado)
-df_manuf = df[df['Manufacturer'] == manuf]
-modelo = st.selectbox("Model:", sorted(df_manuf['Model'].unique()))
+modelo = st.selectbox("Model:", sorted(df_f['Model'].unique()))
+df_f = df_f[df_f['Model'] == modelo]
 
-# Category (filtrado)
-df_model = df_manuf[df_manuf['Model'] == modelo]
-cat = st.selectbox("Category:", sorted(df_model['Category'].unique()))
+cat = st.selectbox("Category:", sorted(df_f['Category'].unique()))
+df_f = df_f[df_f['Category'] == cat]
 
-# Fuel type (filtrado)
-df_cat = df_model[df_model['Category'] == cat]
-fuel = st.selectbox("Fuel type:", sorted(df_cat['Fuel type'].unique()))
+fuel = st.selectbox("Fuel type:", sorted(df_f['Fuel type'].unique()))
+df_f = df_f[df_f['Fuel type'] == fuel]
 
-# Gear box type (filtrado)
-df_fuel = df_cat[df_cat['Fuel type'] == fuel]
-gear = st.selectbox("Gear box type:", sorted(df_fuel['Gear box type'].unique()))
+gear = st.selectbox("Gear box type:", sorted(df_f['Gear box type'].unique()))
 
-# --- 5. LÓGICA DE PREDICCIÓN Y COMPARACIÓN ---
-if st.button("💰 Calcular y Comparar"):
-    resultado = df_fuel[df_fuel['Gear box type'] == gear]
+# --- 4. PREDICCIÓN ---
+if st.button("💰 Calcular Precio"):
+    resultado = df_f[df_f['Gear box type'] == gear]
     
     if not resultado.empty:
-        auto_df = resultado.iloc[0:1].copy()
+        auto = resultado.iloc[0:1].copy()
         
-        # --- CORRECCIÓN CRÍTICA: Ajuste de columnas para el modelo ---
-        # Si el modelo espera columnas que no están en el CSV (ej. Antiguedad_Anios),
-        # las creamos con 0 para evitar el KeyError.
+        # Ajuste: El modelo espera un orden específico de columnas
+        # Creamos un dataframe que coincida con model.feature_names_in_
+        input_final = pd.DataFrame(columns=model.feature_names_in_)
+        
+        # Llenamos con los datos del auto seleccionado
         for col in model.feature_names_in_:
-            if col not in auto_df.columns:
-                auto_df[col] = 0
-        
-        # Filtramos solo las columnas que el modelo conoce
-        datos_input = auto_df[model.feature_names_in_]
-        
-        # Inferencia
-        prediccion = model.predict(datos_input)[0]
-        precio_real = auto_df.iloc[0]['Price']
-        
-        # UI Resultados
-        st.success(f"✅ Auto encontrado: {auto_df.iloc[0]['Manufacturer']} {auto_df.iloc[0]['Model']}")
-        
-        col1, col2 = st.columns(2)
-        col1.metric("🚀 Predicción IA", f"${prediccion:,.2f}")
-        col2.metric("💵 Precio Real", f"${precio_real:,.2f}")
-        
-        # Cálculo de diferencia
-        diferencia = abs(prediccion - precio_real)
-        st.metric("📊 Diferencia absoluta", f"${diferencia:,.2f}")
-        
-    else:
-        st.warning("No se encontraron coincidencias exactas en el historial.")
+            if col in auto.columns:
+                # Si es numérico lo usamos directo, si es texto lo convertimos a código simple
+                if isinstance(auto[col].iloc[0], str):
+                    input_final[col] = 0 # Valor fallback si no tenemos el encoder
+                else:
+                    input_final[col] = auto[col].iloc[0]
+            else:
+                input_final[col] = 0 # Valor por defecto para columnas faltantes
 
-# --- 6. FOOTER ---
-st.markdown("---")
-st.caption("AutoValue IA | Desarrollado para optimizar el ciclo de ventas. Precisión objetivo: MAPE < 12%.")
+        prediccion = model.predict(input_final)[0]
+        
+        st.success(f"✅ Predicción: ${prediccion:,.2f}")
+        st.metric("Precio Real en Histórico", f"${auto['Price'].iloc[0]:,.2f}")
+    else:
+        st.warning("No se encontraron coincidencias exactas.")
