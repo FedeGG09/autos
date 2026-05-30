@@ -1,35 +1,57 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import numpy as np
+import os
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="AutoValue IA", page_icon="🚗")
 
+# Rutas robustas para evitar el FileNotFoundError
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, 'modelo_autos.pkl')
+DATA_PATH = os.path.join(BASE_DIR, 'car_pricing.csv')
+
 @st.cache_resource
 def load_assets():
-    model = joblib.load('modelo_autos.pkl')
-    df = pd.read_csv('car_pricing.csv')
+    model = joblib.load(MODEL_PATH)
+    df = pd.read_csv(DATA_PATH)
     return model, df
 
 model, df = load_assets()
 
-# --- 2. LOGICA DE TRANSFORMACIÓN ---
-# Esta función convierte el texto seleccionado a los números que el modelo espera
-def preparar_datos(input_df):
-    # Aquí es donde ocurre la magia: debemos transformar texto a números
-    # Si usaste LabelEncoder, idealmente deberías haberlo guardado también.
-    # Como solución rápida para tu clase, convertimos las categóricas a categorías numéricas internas
-    df_transformed = input_df.copy()
-    for col in df_transformed.select_dtypes(include=['object']).columns:
-        df_transformed[col] = df_transformed[col].astype('category').cat.codes
-    return df_transformed
+# --- 2. FUNCIÓN ROBUSTA DE TRANSFORMACIÓN ---
+def construir_fila_prediccion(auto_row, expected_features):
+    """
+    Construye un DataFrame de exactamente 1 fila (shape 1, N) 
+    asegurando que solo contenga datos numéricos y coincida 
+    con las columnas que el modelo exige.
+    """
+    # Si viene como DataFrame de 1 fila, lo pasamos a Series
+    if isinstance(auto_row, pd.DataFrame):
+        auto_row = auto_row.iloc[0]
+        
+    datos_seguros = {}
+    
+    for col in expected_features:
+        if col in auto_row.index:
+            valor = auto_row[col]
+            # Si el valor es texto (string), ponemos 0 como fallback de seguridad
+            if isinstance(valor, str):
+                datos_seguros[col] = [0]
+            else:
+                # Si es numérico, lo usamos (o 0 si viene nulo/NaN)
+                datos_seguros[col] = [0 if pd.isna(valor) else valor]
+        else:
+            # Si la columna no existe en el dataset, le ponemos 0
+            datos_seguros[col] = [0]
+            
+    # Al pasar listas [valor], Pandas asegura que se cree exactamente 1 fila
+    return pd.DataFrame(datos_seguros)
 
 # --- 3. UI Y FILTROS EN CASCADA ---
 st.image("autovalue.jpg", width=200)
 st.title("Simulador AutoValue")
 
-# Filtros Jerárquicos
 manuf = st.selectbox("Manufacturer:", sorted(df['Manufacturer'].unique()))
 df_f = df[df['Manufacturer'] == manuf]
 
@@ -49,26 +71,19 @@ if st.button("💰 Calcular Precio"):
     resultado = df_f[df_f['Gear box type'] == gear]
     
     if not resultado.empty:
-        auto = resultado.iloc[0:1].copy()
+        auto_seleccionado = resultado.iloc[0:1].copy()
         
-        # Ajuste: El modelo espera un orden específico de columnas
-        # Creamos un dataframe que coincida con model.feature_names_in_
-        input_final = pd.DataFrame(columns=model.feature_names_in_)
+        # Usamos la función robusta que evita el array de 0 samples
+        input_final = construir_fila_prediccion(auto_seleccionado, model.feature_names_in_)
         
-        # Llenamos con los datos del auto seleccionado
-        for col in model.feature_names_in_:
-            if col in auto.columns:
-                # Si es numérico lo usamos directo, si es texto lo convertimos a código simple
-                if isinstance(auto[col].iloc[0], str):
-                    input_final[col] = 0 # Valor fallback si no tenemos el encoder
-                else:
-                    input_final[col] = auto[col].iloc[0]
-            else:
-                input_final[col] = 0 # Valor por defecto para columnas faltantes
-
+        # Inferencia
         prediccion = model.predict(input_final)[0]
+        precio_real = auto_seleccionado['Price'].iloc[0]
         
-        st.success(f"✅ Predicción: ${prediccion:,.2f}")
-        st.metric("Precio Real en Histórico", f"${auto['Price'].iloc[0]:,.2f}")
+        # Resultados UI
+        st.success(f"✅ Predicción de la IA: ${prediccion:,.2f}")
+        st.metric("Precio Real en Histórico", f"${precio_real:,.2f}")
+        st.metric("Desviación Absoluta", f"${abs(prediccion - precio_real):,.2f}")
+        
     else:
-        st.warning("No se encontraron coincidencias exactas.")
+        st.warning("No se encontraron coincidencias exactas en el historial.")
